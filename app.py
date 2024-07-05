@@ -129,7 +129,8 @@ if st.button('Upload'):
                   d['camera_id'] == camera_id and
                   d['status'] == 'active'][0]
         
-        response = asyncio.run(upload_file(username, password, full_name,
+        with st.spinner('Uploading...'):
+            response = asyncio.run(upload_file(username, password, full_name,
                                            s3_bucket_name, dep_id,
                                            data_type, files))
 
