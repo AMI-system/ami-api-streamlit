@@ -1,0 +1,5 @@
+.streamlit
+.git
+.mypy_cache
+commands.txt
+*.log
