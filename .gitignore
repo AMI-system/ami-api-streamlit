@@ -1,5 +1,6 @@
 .streamlit
 .git
+.gitattributes
 .mypy_cache
 commands.txt
 *.log
