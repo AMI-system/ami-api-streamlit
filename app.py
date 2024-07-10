@@ -1,146 +1,152 @@
-import streamlit as st
-import json
 from time import perf_counter
+import asyncio
+import streamlit as st
 import requests
 from requests.auth import HTTPBasicAuth
-import asyncio
 import aiohttp
 from aiohttp import BasicAuth
 import nest_asyncio
 
 nest_asyncio.apply()
 
+
 # Function to fetch deployments from the URL with authentication
 def get_deployments(username, password):
     url = "https://connect-apps.ceh.ac.uk/ami-data-upload/get-deployments/"
-    response = requests.get(url, auth=HTTPBasicAuth(username, password))
-    if response.status_code == 200:
+    try:
+        response = requests.get(url, auth=HTTPBasicAuth(username, password))
+        response.raise_for_status()
         deployments = response.json()
         return deployments
-    else:
-        return []
+    except requests.exceptions.HTTPError as err:
+        st.error(f"HTTP error occurred: {err}")
+    except Exception as err:
+        st.error(f"An error occurred: {err}")
+    return []
 
-# Async function to upload files
-async def upload_file(username, password, name, bucket, dep_id, data_type, files):
-    url = 'https://connect-apps.ceh.ac.uk/ami-data-upload/upload/'
+
+async def get_presigned_url(username, password, name, bucket, dep_id,
+                            data_type, file_name):
+    url = "https://connect-apps.ceh.ac.uk/ami-data-upload/generate-presigned-url/"
     auth = BasicAuth(username, password)
 
     data = aiohttp.FormData()
-    data.add_field('name', name)
-    data.add_field('country', bucket)
-    data.add_field('deployment', dep_id)
-    data.add_field('data_type', data_type)
+    data.add_field("name", name)
+    # data.add_field("country", bucket)
+    data.add_field("country", "test-upload")
+    data.add_field("deployment", dep_id)
+    data.add_field("data_type", data_type)
+    data.add_field("filename", file_name)
 
-    for file in files:
-        data.add_field('files', file.read(), filename=file.name, content_type=file.type)
-
-    async with aiohttp.ClientSession(auth=auth) as session:
+    async with aiohttp.ClientSession(auth=auth, timeout=aiohttp.ClientTimeout(total=600)) as session:
         async with session.post(url, data=data) as response:
-            return response
+            response.raise_for_status()
+            return await response.json()
 
 
-# Input fields for username and password (for demo purposes, this should be securely handled)
-username = st.text_input('Username:', key='username')
-password = st.text_input('Password:', type='password', key='password')
-
-if username and password:
-    # Fetch deployments
-    deployments = get_deployments(username, password)
-else:
-    deployments = []
-
-# Title of the app
-st.title('Upload Files')
+async def upload_file_to_s3(presigned_url, file_content, file_type):
+    headers = {'Content-Type': file_type}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
+        async with session.put(presigned_url, data=file_content, headers=headers) as response:
+            response.raise_for_status()
 
 
-# Full name input
-full_name = st.text_input('Your Full Name:', key='full_name')
+async def upload_files_in_batches(username, password, name, bucket, dep_id, data_type, files, batch_size=50):
+    for i in range(0, len(files), batch_size):
+        batch = files[i:i + batch_size]
+        await upload_files(username, password, name, bucket, dep_id, data_type, batch)
 
-# Country selection
-valid_country_names = list(set([d['country'] for d in deployments if d['status'] == 'active']))
-country = st.selectbox('Country:', ['Select Country'] + valid_country_names, key='country')
 
-# Fetch deployments for the selected country
-if 'deployment_names' not in st.session_state:
-    st.session_state.deployment_names = []
+async def upload_files(username, password, name, bucket, dep_id, data_type, files):
+    tasks = []
+    for file_name, file_content, file_type in files:
+        try:
+            presigned_url = await get_presigned_url(username, password, name,
+                                                    bucket, dep_id, data_type,
+                                                    file_name)
+            task = upload_file_to_s3(presigned_url, file_content, file_type)
+            tasks.append(task)
+        except Exception as e:
+            st.error(f"Error getting presigned URL for {file_name}: {e}")
+    await asyncio.gather(*tasks)
 
-if country != 'Select Country':
-    st.session_state.deployment_names = [f"{d['location_name']} - {d['camera_id']}" for d in deployments
-                                         if d['country'] == country and d['status'] == 'active']
 
-# Deployment selection
-deployment = st.selectbox('Deployment:', ['Select Deployment'] + st.session_state.deployment_names, key='deployment')
+def main(username, password, deployments):
+    if not deployments:
+        st.error("No deployments found. Please check your credentials or network connection.")
+        return
 
-# Data type selection
-data_type = st.selectbox('Data type:', ['Select Data Type', "snapshot_images",
-                                        "audible_recordings", "ultrasound_recordings"], key='data_type')
+    full_name = st.text_input("Your Full Name:", key="full_name")
 
-if "file_uploader_key" not in st.session_state:
-    st.session_state["file_uploader_key"] = 0
+    valid_country_names = list(set([d["country"] for d in deployments if d["status"] == "active"]))
+    country = st.selectbox("Country:", ["Select Country"] + valid_country_names, key="country")
 
-if "uploaded_files" not in st.session_state:
-    st.session_state["uploaded_files"] = []
+    if "deployment_names" not in st.session_state:
+        st.session_state.deployment_names = []
 
-# File uploader with a check for the number of uploaded files
-uploaded_files = st.file_uploader(
-    'Select Files:',
-    accept_multiple_files=True,
-    type=['jpg', 'jpeg', 'png', 'gif', 'bmp', 'mp3', 'wav', 'ogg'],
-    help='Maximum 1000 files can be selected.',
-    key=st.session_state["file_uploader_key"]
-)
+    if country != "Select Country":
+        st.session_state.deployment_names = [
+            f"{d['location_name']} - {d['camera_id']}" for d in deployments
+            if d["country"] == country and d["status"] == "active"
+        ]
 
-if uploaded_files:
-    st.session_state["uploaded_files"] = uploaded_files
+    deployment = st.selectbox("Deployment:", ["Select Deployment"] + st.session_state.deployment_names, key="deployment")
 
-if uploaded_files is not None:
-    if len(uploaded_files) > 1000:
-        st.warning('You have exceeded the maximum limit of 1000 files. Please select fewer files.')
-        uploaded_files = []
+    data_type = st.selectbox("Data type:", ["Select Data Type", "snapshot_images", "audible_recordings", "ultrasound_recordings"], key="data_type")
 
-if st.button("Clear uploaded files"):
-    st.session_state["file_uploader_key"] += 1
-    st.rerun()
+    with st.form("my_form", clear_on_submit=True, border=False):
+        uploaded_files = st.file_uploader("Select Files:", accept_multiple_files=True, type=["jpg", "jpeg", "png", "mp3", "wav"], help="Maximum 1000 files can be selected.")
+        
+        max_num_files = 1000
+        if uploaded_files and len(uploaded_files) > max_num_files:
+            st.warning(f"You have exceeded the maximum limit of {max_num_files} files. Only the first {max_num_files} will be pushed to the server.")
+            uploaded_files = uploaded_files[:max_num_files]
 
-# Upload button
-if st.button('Upload'):
+        submitted = st.form_submit_button("Upload")
+        if submitted:
+            handle_upload(username, password, full_name, country, deployment, data_type, uploaded_files, deployments)
+
+def handle_upload(username, password, full_name, country, deployment, data_type, uploaded_files, deployments):
     if not full_name:
-        st.warning('Please enter your full name.')
-    elif country == 'Select Country':
-        st.warning('Please select a country.')
-    elif deployment == 'Select Deployment':
-        st.warning('Please select a deployment.')
-    elif data_type == 'Select Data Type':
-        st.warning('Please select a data type.')
+        st.warning("Please enter your full name.")
+    elif country == "Select Country":
+        st.warning("Please select a country.")
+    elif deployment == "Select Deployment":
+        st.warning("Please select a deployment.")
+    elif data_type == "Select Data Type":
+        st.warning("Please select a data type.")
     elif not uploaded_files:
-        st.warning('Please upload at least one file.')
+        st.warning("Please upload at least one file.")
     else:
         start_time = perf_counter()
-        
-        # Prepare files for upload
-        files = [file for file in uploaded_files]
 
-        s3_bucket_name = [d['country_code'] for d in deployments
-                          if d['country'] == country and d['status'] == 'active'][0].lower()
-        location_name, camera_id = deployment.split(' - ')
-        dep_id = [d['deployment_id'] for d in deployments
-                  if d['country'] == country and
-                  d['location_name'] == location_name and
-                  d['camera_id'] == camera_id and
-                  d['status'] == 'active'][0]
-        
-        with st.spinner('Uploading...'):
-            response = asyncio.run(upload_file(username, password, full_name,
-                                           s3_bucket_name, dep_id,
-                                           data_type, files))
+        try:
+            files = [(file.name, file.read(), file.type) for file in uploaded_files]
 
-        if response.status == 200:
+            s3_bucket_name = [d["country_code"] for d in deployments if d["country"] == country and d["status"] == "active"][0].lower()
+            location_name, camera_id = deployment.split(" - ")
+            dep_id = [d["deployment_id"] for d in deployments if d["country"] == country and d["location_name"] == location_name and d["camera_id"] == camera_id and d["status"] == "active"][0]
+
+            with st.spinner("Uploading..."):
+                asyncio.run(upload_files_in_batches(username, password, full_name, s3_bucket_name, dep_id, data_type, files))
+
             st.success("Files uploaded successfully!")
-        else:
-            st.error(f"Failed to upload files. Status code: {response.status}")
+        except Exception as e:
+            st.error(f"Failed to upload files. Error: {e}")
 
         end_time = perf_counter()
         print(f"Upload files took: {end_time - start_time} seconds.")
 
-# To run this app, save it as `app.py` and run the following command in your terminal:
+if __name__ == '__main__':
+    st.title("Upload Files")
+
+    username = st.text_input("Username:", key="username")
+    password = st.text_input("Password:", type="password", key="password")
+
+    if username and password:
+        deployments = get_deployments(username, password)
+        main(username, password, deployments)
+
+# To run this app, save it as `app.py`
+# and run the following command in your terminal:
 # streamlit run app.py
