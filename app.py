@@ -137,15 +137,25 @@ def handle_upload(username, password, full_name, country, deployment, data_type,
         end_time = perf_counter()
         print(f"Upload files took: {end_time - start_time} seconds.")
 
+
 if __name__ == '__main__':
     st.title("Upload Files")
 
     username = st.text_input("Username:", key="username")
     password = st.text_input("Password:", type="password", key="password")
 
-    if username and password:
-        deployments = get_deployments(username, password)
-        main(username, password, deployments)
+    if st.button("Login"):
+        if username and password:
+            st.session_state.deployments = get_deployments(username, password)
+        else:
+            st.warning('Please enter your username and password')
+
+    if 'deployments' in st.session_state:
+        main(username, password, st.session_state.deployments)
+
+    # if username and password:
+    #     deployments = get_deployments(username, password)
+    #     main(username, password, deployments)
 
 # To run this app, save it as `app.py`
 # and run the following command in your terminal:
