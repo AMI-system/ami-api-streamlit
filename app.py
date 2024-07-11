@@ -32,8 +32,7 @@ async def get_presigned_url(username, password, name, bucket, dep_id,
 
     data = aiohttp.FormData()
     data.add_field("name", name)
-    # data.add_field("country", bucket)
-    data.add_field("country", "test-upload")
+    data.add_field("country", bucket)
     data.add_field("deployment", dep_id)
     data.add_field("data_type", data_type)
     data.add_field("filename", file_name)
@@ -153,9 +152,6 @@ if __name__ == '__main__':
     if 'deployments' in st.session_state:
         main(username, password, st.session_state.deployments)
 
-    # if username and password:
-    #     deployments = get_deployments(username, password)
-    #     main(username, password, deployments)
 
 # To run this app, save it as `app.py`
 # and run the following command in your terminal:
