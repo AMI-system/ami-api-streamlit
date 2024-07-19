@@ -26,13 +26,6 @@ nest_asyncio.apply()
 def get_deployments(user, pwd):
     """
     Fetches deployments from the specified URL using the provided username and password for authentication.
-
-    Args:
-        username (str): The username for authentication.
-        password (str): The password for authentication.
-
-    Returns:
-        list: A list of deployments if the request is successful, otherwise an empty list.
     """
     try:
         url = "https://connect-apps.ceh.ac.uk/ami-data-upload/get-deployments/"
@@ -54,18 +47,6 @@ async def get_presigned_url(
 ):
     """
     Fetches a presigned URL for uploading a file using the provided details.
-
-    Args:
-        username (str): The username for authentication.
-        password (str): The password for authentication.
-        name (str): The name associated with the upload.
-        bucket (str): The S3 bucket name.
-        dep_id (str): The deployment ID.
-        data_type (str): The type of data being uploaded.
-        file_name (str): The name of the file to be uploaded.
-
-    Returns:
-        dict: The JSON response containing the presigned URL if the request is successful.
     """
     url = "https://connect-apps.ceh.ac.uk/ami-data-upload/generate-presigned-url/"
 
@@ -86,14 +67,6 @@ async def get_presigned_url(
 async def upload_file_to_s3(session, presigned_url, file_content, file_type):
     """
     Uploads a file to S3 using a presigned URL.
-
-    Args:
-        presigned_url (str): The presigned URL for uploading the file.
-        file_content (bytes): The content of the file to be uploaded.
-        file_type (str): The MIME type of the file.
-
-    Returns:
-        None
     """
     headers = {"Content-Type": file_type}
     async with session.put(
@@ -107,19 +80,6 @@ async def upload_files_in_batches(
 ):
     """
     Uploads files in batches to S3.
-
-    Args:
-        username (str): The username for authentication.
-        password (str): The password for authentication.
-        name (str): The name associated with the upload.
-        bucket (str): The S3 bucket name.
-        dep_id (str): The deployment ID.
-        data_type (str): The type of data being uploaded.
-        files (list): A list of tuples containing file name, file content, and file type.
-        batch_size (int, optional): The number of files to upload in each batch. Defaults to 50.
-
-    Returns:
-        None
     """
     async with aiohttp.ClientSession(timeout=ClientTimeout(total=1200)) as session:
         while True:
@@ -150,17 +110,6 @@ async def upload_files(session, user, pwd, name, bucket, dep_id, data_type, file
     """
     Uploads multiple files to S3 by first obtaining presigned URLs and then uploading the files.
 
-    Args:
-        username (str): The username for authentication.
-        password (str): The password for authentication.
-        name (str): The name associated with the upload.
-        bucket (str): The S3 bucket name.
-        dep_id (str): The deployment ID.
-        data_type (str): The type of data being uploaded.
-        files (list): A list of tuples containing file name, file content, and file type.
-
-    Returns:
-        None
     """
     tasks = []
     for file_name, file_content, file_type in files:
@@ -225,14 +174,6 @@ def get_file_info(file_path):
 def main(user, pwd, deployments):
     """
     The main function to handle the user interface and interaction in the Streamlit app.
-
-    Args:
-        username (str): The username for authentication.
-        password (str): The password for authentication.
-        deployments (list): A list of deployments fetched from the server.
-
-    Returns:
-        None
     """
     if not deployments:
         st.error(
@@ -318,19 +259,6 @@ def handle_upload(
 ):
     """
     Handles the file upload process by validating inputs and initiating the upload.
-
-    Args:
-        username (str): The username for authentication.
-        password (str): The password for authentication.
-        full_name (str): The full name of the user.
-        country (str): The selected country.
-        deployment (str): The selected deployment.
-        data_type (str): The type of data being uploaded.
-        uploaded_files (list): A list of uploaded files.
-        deployments (list): A list of deployments fetched from the server.
-
-    Returns:
-        None
     """
     if not full_name:
         st.warning("Please enter your full name.")
