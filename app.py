@@ -6,14 +6,18 @@ This script run an streamlit application for uploading files to an S3 bucket usi
 It guides the user through selecting the deployment and data type and then uploads the specified files.
 """
 
+import os
+import mimetypes
 from time import perf_counter
 import asyncio
 import streamlit as st
 import requests
 from requests.auth import HTTPBasicAuth
 import aiohttp
-from aiohttp import BasicAuth
+from aiohttp import BasicAuth, ClientTimeout, FormData
 import nest_asyncio
+from tenacity import retry, wait_fixed, stop_after_attempt
+
 
 nest_asyncio.apply()
 
@@ -44,7 +48,10 @@ def get_deployments(user, pwd):
     return []
 
 
-async def get_presigned_url(user, pwd, name, bucket, dep_id, data_type, file_name):
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
+async def get_presigned_url(
+    session, user, pwd, name, bucket, dep_id, data_type, file_name, file_type
+):
     """
     Fetches a presigned URL for uploading a file using the provided details.
 
@@ -61,24 +68,22 @@ async def get_presigned_url(user, pwd, name, bucket, dep_id, data_type, file_nam
         dict: The JSON response containing the presigned URL if the request is successful.
     """
     url = "https://connect-apps.ceh.ac.uk/ami-data-upload/generate-presigned-url/"
-    auth = BasicAuth(user, pwd)
 
-    data = aiohttp.FormData()
+    data = FormData()
     data.add_field("name", name)
     data.add_field("country", bucket)
     data.add_field("deployment", dep_id)
     data.add_field("data_type", data_type)
     data.add_field("filename", file_name)
+    data.add_field("file_type", file_type)
 
-    async with aiohttp.ClientSession(
-        auth=auth, timeout=aiohttp.ClientTimeout(total=600)
-    ) as session:
-        async with session.post(url, data=data) as response:
-            response.raise_for_status()
-            return await response.json()
+    async with session.post(url, auth=BasicAuth(user, pwd), data=data) as response:
+        response.raise_for_status()
+        return await response.json()
 
 
-async def upload_file_to_s3(presigned_url, file_content, file_type):
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
+async def upload_file_to_s3(session, presigned_url, file_content, file_type):
     """
     Uploads a file to S3 using a presigned URL.
 
@@ -91,17 +96,14 @@ async def upload_file_to_s3(presigned_url, file_content, file_type):
         None
     """
     headers = {"Content-Type": file_type}
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=600)
-    ) as session:
-        async with session.put(
-            presigned_url, data=file_content, headers=headers
-        ) as response:
-            response.raise_for_status()
+    async with session.put(
+        presigned_url, data=file_content, headers=headers
+    ) as response:
+        response.raise_for_status()
 
 
 async def upload_files_in_batches(
-    user, pwd, name, bucket, dep_id, data_type, files, batch_size=50
+    user, pwd, name, bucket, dep_id, data_type, files, batch_size=100
 ):
     """
     Uploads files in batches to S3.
@@ -119,13 +121,32 @@ async def upload_files_in_batches(
     Returns:
         None
     """
-    for i in range(0, len(files), batch_size):
-        end = i + batch_size
-        batch = files[i:end]
-        await upload_files(user, pwd, name, bucket, dep_id, data_type, batch)
+    async with aiohttp.ClientSession(timeout=ClientTimeout(total=1200)) as session:
+        while True:
+            files_to_upload = await check_files(
+                session, user, pwd, name, bucket, dep_id, data_type, files
+            )
+            if not files_to_upload:
+                print("All files have been uploaded successfully.")
+                break
+
+            if len(files_to_upload) <= batch_size:
+                await upload_files(
+                    session, user, pwd, name, bucket, dep_id, data_type, files_to_upload
+                )
+            else:
+                for i in range(0, len(files_to_upload), batch_size):
+                    end = i + batch_size
+                    batch = files_to_upload[i:end]
+                    await upload_files(
+                        session, user, pwd, name, bucket, dep_id, data_type, batch
+                    )
+
+            # Update files list to only include those that still need to be checked
+            files = files_to_upload
 
 
-async def upload_files(user, pwd, name, bucket, dep_id, data_type, files):
+async def upload_files(session, user, pwd, name, bucket, dep_id, data_type, files):
     """
     Uploads multiple files to S3 by first obtaining presigned URLs and then uploading the files.
 
@@ -145,13 +166,60 @@ async def upload_files(user, pwd, name, bucket, dep_id, data_type, files):
     for file_name, file_content, file_type in files:
         try:
             presigned_url = await get_presigned_url(
-                user, pwd, name, bucket, dep_id, data_type, file_name
+                session,
+                user,
+                pwd,
+                name,
+                bucket,
+                dep_id,
+                data_type,
+                file_name,
+                file_type,
             )
-            task = upload_file_to_s3(presigned_url, file_content, file_type)
+            task = upload_file_to_s3(session, presigned_url, file_content, file_type)
             tasks.append(task)
         except Exception as e:
             st.error(f"Error getting presigned URL for {file_name}: {e}")
     await asyncio.gather(*tasks)
+
+
+async def check_files(session, user, pwd, name, bucket, dep_id, data_type, files):
+    """Check if files exists in the object store already."""
+    files_to_upload = []
+
+    for file_path in files:
+        if not await check_file_exist(
+            session, user, pwd, name, bucket, dep_id, data_type, file_path[0]
+        ):
+            files_to_upload.append(file_path)
+
+    return files_to_upload
+
+
+async def check_file_exist(
+    session, user, pwd, name, bucket, dep_id, data_type, file_path
+):
+    """Check if files exists in the object store already."""
+    url = "https://connect-apps.ceh.ac.uk/ami-data-upload/check-file-exist/"
+    file_name, _ = get_file_info(file_path)
+    data = FormData()
+    data.add_field("name", name)
+    data.add_field("country", bucket)
+    data.add_field("deployment", dep_id)
+    data.add_field("data_type", data_type)
+    data.add_field("filename", file_name)
+
+    async with session.post(url, auth=BasicAuth(user, pwd), data=data) as response:
+        response.raise_for_status()
+        exist = await response.json()
+        return exist["exists"]
+
+
+def get_file_info(file_path):
+    """Get file information including name, content, and type."""
+    filename = os.path.basename(file_path)
+    file_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    return filename, file_type
 
 
 def main(user, pwd, deployments):
@@ -330,3 +398,8 @@ if __name__ == "__main__":
 
     if "deployments" in st.session_state:
         main(username, password, st.session_state.deployments)
+
+
+# To run this app, save it as app.py
+# and run the following command in your terminal:
+# streamlit run app.py
